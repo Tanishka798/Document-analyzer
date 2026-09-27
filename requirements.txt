@@ -1,9 +1,9 @@
 # =============================================================================
-# Streamlit frontend (Streamlit Community Cloud installs this file)
+# Streamlit frontend
 #
 # The UI talks to FastAPI over HTTP when BACKEND_URL is set. Do not add
-# torch / chromadb / sentence-transformers here — those belong on Render
-# (see backend/requirements.txt). Local in-process mode still needs both
+# torch / chromadb / sentence-transformers here; keep those in the local
+# backend environment instead. Local in-process mode still needs both
 # files installed: pip install -r requirements.txt -r backend/requirements.txt
 # =============================================================================
 streamlit==1.40.1

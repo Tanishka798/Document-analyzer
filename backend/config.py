@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     cors_origins: str = ""
 
     # --- LLM provider ---
-    # ollama (local), huggingface, or openai (required on Render / Streamlit Cloud).
+    # ollama (local), huggingface, or openai.
     llm_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "qwen2.5:3b"
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"
 
     # --- Embeddings ---
-    # "local" uses sentence-transformers (needs torch; too heavy for free Render).
+    # "local" uses sentence-transformers.
     # "openai" uses the OpenAI embeddings API (same OPENAI_API_KEY as chat).
     embedding_provider: str = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

@@ -3,12 +3,11 @@ ollama_client.py
 ----------------
 Why this module exists:
     Chat, summarize, and compare share one LLM generation function. Local
-    development uses Ollama, while deployed Spaces can use Hugging Face
-    Inference Providers.
+    development can use Ollama, Hugging Face, or OpenAI.
 
 Credentials:
     Ollama mode needs no API key. Hugging Face mode reads HF_TOKEN from the
-    environment, which should be configured as a Space secret.
+    environment.
 
 Ollama uses /api/generate because the RAG prompt is assembled before the
 request; Hugging Face uses chat_completion with the same system and user
@@ -45,9 +44,7 @@ def generate(prompt: str, system: str | None = None) -> str:
 def _generate_openai(prompt: str, system: str | None) -> str:
     if not settings.openai_api_key:
         raise OllamaError(
-            "OPENAI_API_KEY is missing. Set it as a Render environment variable "
-            "(never commit it, and never put it in Streamlit secrets if the "
-            "frontend only needs BACKEND_URL)."
+            "OPENAI_API_KEY is missing. Set it in your local environment or .env file."
         )
     messages = []
     if system:

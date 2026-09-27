@@ -101,7 +101,7 @@ async def upload_document(file: UploadFile) -> DocumentInfo:
     finally:
         # Extraction is finished in this request; later chat/summarize use
         # Chroma + SQLite, not the original file. Drop the upload so a
-        # Render disk wipe or sleep cannot leave a dangling path we depend on.
+        # temporary local file does not remain around.
         saved_path.unlink(missing_ok=True)
 
     row = metadata_db.get_document(document_id)

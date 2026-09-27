@@ -78,8 +78,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def _embed_openai(texts: list[str]) -> list[list[float]]:
     if not settings.openai_api_key:
         raise RuntimeError(
-            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set. "
-            "Add the key as a Render environment variable."
+            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set."
         )
     import httpx
 

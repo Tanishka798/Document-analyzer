@@ -4,8 +4,7 @@ api_client.py
 Why this module exists:
     Keeps every backend call in one place. Locally, with no BACKEND_URL,
     the FastAPI app still runs in-process through TestClient. When
-    BACKEND_URL is set (Streamlit Cloud secret or environment variable),
-    every call is a real HTTP request to the deployed FastAPI service.
+    BACKEND_URL is set, every call is a real HTTP request to the backend.
 
 Error handling:
     Every function raises APIError with a message that's already safe
@@ -43,10 +42,10 @@ def _streamlit_secret(name: str) -> str | None:
 
 
 def backend_base_url() -> str:
-    """Deployed FastAPI origin, e.g. https://your-service.onrender.com.
+    """Backend origin for a separate FastAPI process.
 
-    Streamlit secrets take precedence over the environment so Community
-    Cloud does not need a committed URL.
+    Streamlit secrets take precedence over the environment when you run the
+    UI and API as separate local processes.
     """
     secret = _streamlit_secret("BACKEND_URL")
     if secret:

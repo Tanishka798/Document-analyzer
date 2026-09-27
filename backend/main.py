@@ -128,7 +128,7 @@ def _check_openai() -> DependencyStatus:
         return DependencyStatus(
             name="openai",
             available=False,
-            detail="OPENAI_API_KEY is not set. Add it as a Render environment variable.",
+            detail="OPENAI_API_KEY is not set.",
         )
     return DependencyStatus(
         name="openai",
@@ -219,7 +219,7 @@ def health_check() -> HealthResponse:
         else _check_package(
             "sentence_transformers",
             "embeddings",
-            extra_detail="sentence-transformers (local). Use EMBEDDING_PROVIDER=openai on Render.",
+            extra_detail="sentence-transformers (local). Use EMBEDDING_PROVIDER=openai if you want OpenAI embeddings.",
         )
     )
     dependencies = [
