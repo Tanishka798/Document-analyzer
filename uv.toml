@@ -1,0 +1,2 @@
+# Windows/OneDrive folders cannot hardlink into uv's cache (os error 396).
+link-mode = "copy"
