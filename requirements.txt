@@ -1,40 +1,11 @@
 # =============================================================================
-# Document Assistant - dependencies
+# Streamlit frontend (Streamlit Community Cloud installs this file)
 #
-# Grouped by phase so it's clear what each package is for. All of this
-# runs locally; nothing here needs a cloud account or API key.
+# The UI talks to FastAPI over HTTP when BACKEND_URL is set. Do not add
+# torch / chromadb / sentence-transformers here — those belong on Render
+# (see backend/requirements.txt). Local in-process mode still needs both
+# files installed: pip install -r requirements.txt -r backend/requirements.txt
 # =============================================================================
-
-# --- Phase 1: backend + config ---
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pydantic==2.10.3
-pydantic-settings==2.7.1
-python-dotenv==1.0.1
-httpx==0.28.1
-huggingface_hub==0.36.2
-
-# --- Phase 2/3: document extraction, chunking, embeddings, vector storage ---
-python-multipart==0.0.20   # required by FastAPI to receive file uploads
-pypdf==5.1.0                # .pdf text extraction
-python-docx==1.1.2          # .docx text extraction
-python-pptx==1.0.2          # .pptx text extraction
-openpyxl==3.1.5             # .xlsx text extraction
-sentence-transformers==3.3.1  # local embedding model (downloads from
-                               # huggingface.co on first use, no API key)
-chromadb==0.5.23            # local persistent vector store
-
-# --- Optional: OCR fallback for scanned/image-only PDFs (OCR_ENABLED=true) ---
-# pytesseract==0.3.13
-# pdf2image==1.17.0
-# (also requires the Tesseract OCR and poppler system packages on Windows)
-
-# --- Phase 7: Streamlit frontend ---
-# streamlit>=1.38 is required for the built-in st.audio_input voice-recording
-# widget used by frontend/app.py.
 streamlit==1.40.1
-requests==2.32.3
-
-# --- Phase 8: voice input (speech-to-text) ---
-faster-whisper==1.1.0        # downloads the Whisper model on first use
-# piper-tts==1.2.0           # text-to-speech, downloads voice on first use
+httpx==0.28.1
+python-dotenv==1.0.1

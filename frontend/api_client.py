@@ -2,9 +2,10 @@
 api_client.py
 --------------
 Why this module exists:
-    Keeps every backend call in one place. The FastAPI app runs
-    in-process through TestClient, so Streamlit Cloud needs no second
-    server process or localhost URL.
+    Keeps every backend call in one place. Locally, with no BACKEND_URL,
+    the FastAPI app still runs in-process through TestClient. When
+    BACKEND_URL is set (Streamlit Cloud secret or environment variable),
+    every call is a real HTTP request to the deployed FastAPI service.
 
 Error handling:
     Every function raises APIError with a message that's already safe
@@ -14,11 +15,10 @@ Error handling:
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 import httpx
-
-from backend.config import settings
 
 TIMEOUT_SHORT = 15
 TIMEOUT_LONG = 300  # LLM calls can be slow on the first request or on CPU
@@ -30,27 +30,55 @@ class APIError(Exception):
     """Raised for backend failures with a message safe to show to the user."""
 
 
+def _streamlit_secret(name: str) -> str | None:
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            value = st.secrets[name]
+            return str(value).strip() if value is not None else None
+    except Exception:  # noqa: BLE001 - secrets.toml is optional
+        return None
+    return None
+
+
+def backend_base_url() -> str:
+    """Deployed FastAPI origin, e.g. https://your-service.onrender.com.
+
+    Streamlit secrets take precedence over the environment so Community
+    Cloud does not need a committed URL.
+    """
+    secret = _streamlit_secret("BACKEND_URL")
+    if secret:
+        return secret.rstrip("/")
+    return os.environ.get("BACKEND_URL", "").strip().rstrip("/")
+
+
 def _apply_streamlit_secrets() -> None:
     try:
         import streamlit as st
+
+        from backend.config import settings
 
         secrets = st.secrets
         setting_names = {
             "LLM_PROVIDER": "llm_provider",
             "HF_MODEL_ID": "hf_model_id",
             "HF_TOKEN": "hf_token",
+            "OPENAI_API_KEY": "openai_api_key",
+            "EMBEDDING_PROVIDER": "embedding_provider",
             "WHISPER_MODEL_SIZE": "whisper_model_size",
             "WHISPER_DEVICE": "whisper_device",
         }
         for secret_name, setting_name in setting_names.items():
             if secret_name in secrets:
                 setattr(settings, setting_name, secrets[secret_name])
-    except FileNotFoundError:
+    except Exception:  # noqa: BLE001 - in-process mode only
         return
 
 
 @lru_cache(maxsize=1)
-def _client():
+def _inprocess_client():
     _apply_streamlit_secrets()
 
     from fastapi.testclient import TestClient
@@ -60,6 +88,11 @@ def _client():
     client = TestClient(app, raise_server_exceptions=False)
     client.__enter__()
     return client
+
+
+@lru_cache(maxsize=1)
+def _http_client() -> httpx.Client:
+    return httpx.Client(base_url=backend_base_url(), timeout=TIMEOUT_LONG)
 
 
 def _raise_for(response: httpx.Response) -> None:
@@ -73,9 +106,13 @@ def _raise_for(response: httpx.Response) -> None:
 
 
 def _request(method: str, path: str, **kwargs) -> httpx.Response:
+    timeout = kwargs.pop("timeout", TIMEOUT_LONG)
     try:
-        kwargs.pop("timeout", None)
-        response = _client().request(method, path, **kwargs)
+        if backend_base_url():
+            response = _http_client().request(method, path, timeout=timeout, **kwargs)
+        else:
+            kwargs.pop("timeout", None)
+            response = _inprocess_client().request(method, path, **kwargs)
     except httpx.TimeoutException as exc:
         raise APIError("The backend took too long to respond (timed out).") from exc
     except Exception as exc:  # noqa: BLE001 - normalize startup and ASGI errors

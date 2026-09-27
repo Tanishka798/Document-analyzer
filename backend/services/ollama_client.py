@@ -29,38 +29,89 @@ class OllamaError(Exception):
 
 def generate(prompt: str, system: str | None = None) -> str:
     """Generate text through the selected provider and normalize errors."""
-    if settings.llm_provider.lower() == "huggingface":
-        if not settings.hf_token:
-            raise OllamaError("HF_TOKEN is missing. Add it as a Hugging Face Space secret.")
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        try:
-            client = InferenceClient(
-                model=settings.hf_model_id,
-                provider="auto",
-                token=settings.hf_token,
-                timeout=300.0,
-            )
-            response = client.chat_completion(
-                messages,
-                max_tokens=settings.ollama_max_output_tokens,
-                temperature=0.2,
-            )
-        except Exception as exc:  # noqa: BLE001 - normalize provider errors for API callers
-            raise OllamaError(f"Hugging Face Inference failed: {exc}") from exc
-
-        text = response.choices[0].message.content
-        if not text:
-            raise OllamaError("Hugging Face Inference returned an empty response.")
-        return text
-
-    if settings.llm_provider.lower() != "ollama":
+    provider = settings.llm_provider.lower()
+    if provider == "openai":
+        return _generate_openai(prompt, system)
+    if provider == "huggingface":
+        return _generate_huggingface(prompt, system)
+    if provider != "ollama":
         raise OllamaError(
-            f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. Use 'ollama' or 'huggingface'."
+            f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. "
+            "Use 'ollama', 'huggingface', or 'openai'."
         )
+    return _generate_ollama(prompt, system)
 
+
+def _generate_openai(prompt: str, system: str | None) -> str:
+    if not settings.openai_api_key:
+        raise OllamaError(
+            "OPENAI_API_KEY is missing. Set it as a Render environment variable "
+            "(never commit it, and never put it in Streamlit secrets if the "
+            "frontend only needs BACKEND_URL)."
+        )
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    try:
+        response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.openai_chat_model,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": settings.ollama_max_output_tokens,
+            },
+            timeout=300.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:300]
+        raise OllamaError(
+            f"OpenAI chat failed (status {exc.response.status_code}): {detail}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise OllamaError(f"OpenAI chat request failed: {exc}") from exc
+
+    text = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+    if not text:
+        raise OllamaError("OpenAI returned an empty chat response.")
+    return text
+
+
+def _generate_huggingface(prompt: str, system: str | None) -> str:
+    if not settings.hf_token:
+        raise OllamaError("HF_TOKEN is missing. Add it as a Hugging Face Space secret.")
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    try:
+        client = InferenceClient(
+            model=settings.hf_model_id,
+            provider="auto",
+            token=settings.hf_token,
+            timeout=300.0,
+        )
+        response = client.chat_completion(
+            messages,
+            max_tokens=settings.ollama_max_output_tokens,
+            temperature=0.2,
+        )
+    except Exception as exc:  # noqa: BLE001 - normalize provider errors for API callers
+        raise OllamaError(f"Hugging Face Inference failed: {exc}") from exc
+
+    text = response.choices[0].message.content
+    if not text:
+        raise OllamaError("Hugging Face Inference returned an empty response.")
+    return text
+
+
+def _generate_ollama(prompt: str, system: str | None) -> str:
     payload: dict = {
         "model": settings.ollama_chat_model,
         "prompt": prompt,

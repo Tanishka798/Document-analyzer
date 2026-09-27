@@ -62,9 +62,9 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a batch of chunk texts (used at ingestion time)."""
     if not texts:
         return []
-    # Never pass empty strings: sentence-transformers strips each item and
-    # the fast tokenizer rejects "" with TextEncodeInput TypeError.
     cleaned = [sanitize_text(t) or " " for t in texts]
+    if settings.embedding_provider.lower() == "openai":
+        return _embed_openai(cleaned)
     model = _get_model()
     vectors = model.encode(
         cleaned,
@@ -73,6 +73,44 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         batch_size=32,
     )
     return [v.tolist() for v in vectors]
+
+
+def _embed_openai(texts: list[str]) -> list[list[float]]:
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set. "
+            "Add the key as a Render environment variable."
+        )
+    import httpx
+
+    vectors: list[list[float]] = []
+    batch_size = 64
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        try:
+            response = httpx.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": settings.openai_embedding_model, "input": batch},
+                timeout=120.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"OpenAI embeddings failed (status {exc.response.status_code}): "
+                f"{exc.response.text[:300]}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"OpenAI embeddings request failed: {exc}") from exc
+        data = response.json().get("data") or []
+        data.sort(key=lambda item: item.get("index", 0))
+        vectors.extend(item["embedding"] for item in data)
+    if len(vectors) != len(texts):
+        raise RuntimeError("OpenAI embeddings returned a different number of vectors than inputs.")
+    return vectors
 
 
 def embed_query(text: str) -> list[float]:

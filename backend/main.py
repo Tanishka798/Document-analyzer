@@ -24,9 +24,11 @@ Why we check Ollama here already, even before Phase 5 (LLM integration):
 
 import importlib.util
 import logging
+import os
 
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.routers import chat, compare, documents, summarize, voice
@@ -42,6 +44,18 @@ app = FastAPI(
     "summaries, comparisons, and voice endpoints.",
     version="0.1.0",
 )
+
+_cors_origins = settings.cors_origin_list()
+if _cors_origins:
+    # Streamlit server-side HTTP does not use browser CORS. This is only
+    # needed if a browser (or Streamlit custom component) calls the API.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 app.include_router(documents.router)
 app.include_router(chat.router)
@@ -109,6 +123,23 @@ def _check_ollama() -> DependencyStatus:
         return DependencyStatus(name="ollama", available=False, detail=f"Ollama error: {exc}")
 
 
+def _check_openai() -> DependencyStatus:
+    if not settings.openai_api_key:
+        return DependencyStatus(
+            name="openai",
+            available=False,
+            detail="OPENAI_API_KEY is not set. Add it as a Render environment variable.",
+        )
+    return DependencyStatus(
+        name="openai",
+        available=True,
+        detail=(
+            f"API key configured; chat model '{settings.openai_chat_model}', "
+            f"embeddings '{settings.openai_embedding_model}'."
+        ),
+    )
+
+
 def _check_huggingface_inference() -> DependencyStatus:
     if not settings.hf_token:
         return DependencyStatus(
@@ -162,24 +193,52 @@ def health_check() -> HealthResponse:
     hides the status of everything else.
     """
     provider = settings.llm_provider.lower()
-    llm_status = (
-        _check_huggingface_inference()
-        if provider == "huggingface"
-        else _check_ollama()
-        if provider == "ollama"
-        else DependencyStatus(
+    if provider == "openai":
+        llm_status = _check_openai()
+    elif provider == "huggingface":
+        llm_status = _check_huggingface_inference()
+    elif provider == "ollama":
+        llm_status = _check_ollama()
+    else:
+        llm_status = DependencyStatus(
             name="llm_provider",
             available=False,
             detail=f"Unsupported LLM_PROVIDER '{settings.llm_provider}'.",
+        )
+    embedding_status = (
+        DependencyStatus(
+            name="embeddings",
+            available=bool(settings.openai_api_key),
+            detail=(
+                f"OpenAI embeddings ({settings.openai_embedding_model})"
+                if settings.openai_api_key
+                else "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set."
+            ),
+        )
+        if settings.embedding_provider.lower() == "openai"
+        else _check_package(
+            "sentence_transformers",
+            "embeddings",
+            extra_detail="sentence-transformers (local). Use EMBEDDING_PROVIDER=openai on Render.",
         )
     )
     dependencies = [
         llm_status,
         _check_chroma(),
-        _check_package("sentence_transformers", "embeddings"),
+        embedding_status,
     ]
     if settings.tts_enabled:
         dependencies.append(_check_package("piper", "tts"))
     if settings.ocr_enabled:
         dependencies.append(_check_package("pytesseract", "ocr"))
     return HealthResponse(status="ok", dependencies=dependencies)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "backend.main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", settings.backend_port)),
+    )

@@ -57,8 +57,12 @@ class Settings(BaseSettings):
     backend_host: str = "127.0.0.1"
     backend_port: int = 8000
     log_level: str = "INFO"
+    # Comma-separated origins. Leave empty for Streamlit server-side calls
+    # (those are not browser CORS). Set only if a browser will call this API.
+    cors_origins: str = ""
 
     # --- LLM provider ---
+    # ollama (local), huggingface, or openai (required on Render / Streamlit Cloud).
     llm_provider: str = "ollama"
     ollama_base_url: str = "http://localhost:11434"
     ollama_chat_model: str = "qwen2.5:3b"
@@ -66,8 +70,14 @@ class Settings(BaseSettings):
     ollama_context_budget_tokens: int = 3000
     hf_model_id: str = "Qwen/Qwen2.5-7B-Instruct"
     hf_token: str = ""
+    openai_api_key: str = ""
+    openai_chat_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
 
     # --- Embeddings ---
+    # "local" uses sentence-transformers (needs torch; too heavy for free Render).
+    # "openai" uses the OpenAI embeddings API (same OPENAI_API_KEY as chat).
+    embedding_provider: str = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # --- Storage paths (kept as strings from env, resolved below) ---
@@ -122,6 +132,9 @@ class Settings(BaseSettings):
         if not path.is_absolute():
             path = PROJECT_ROOT / path
         return path.resolve()
+
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     def ensure_data_dirs_exist(self) -> None:
         """Create the local data directories if they don't exist yet.

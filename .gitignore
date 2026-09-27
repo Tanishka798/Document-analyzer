@@ -5,6 +5,7 @@ venv/
 # Environment variables (contains machine-specific paths, never secrets by design,
 # but still shouldn't be committed since it documents a specific local setup)
 .env
+.streamlit/secrets.toml
 
 # Python
 __pycache__/

@@ -1,149 +1,188 @@
-# Document Assistant (Local-First, Voice-Enabled RAG)
+# Document Assistant (Streamlit + FastAPI RAG)
 
-> Status: **Full stack complete** (Phases 1–3, 5–8 of the original
-> 10-phase roadmap). Document ingestion, RAG chat, summarize, compare,
-> voice, and a Streamlit frontend are all implemented. Not yet built:
-> BM25/hybrid retrieval (pure vector search only, for now) and an
-> automated test suite — see "Roadmap" below.
+A Streamlit UI with a FastAPI RAG backend: upload documents
+(PDF/DOCX/PPTX/XLSX/TXT/MD), ask questions with cited sources,
+summarize and compare documents, and use voice input.
 
-## What this is
+**Hosting target:** Streamlit Community Cloud (unchanged Streamlit UI) +
+Render (FastAPI). Chat/embeddings on those hosts use the OpenAI API.
+Local development can still use Ollama and sentence-transformers.
 
-A local FastAPI backend that lets you upload documents
-(PDF/DOCX/PPTX/XLSX/TXT/MD), ask questions across them with cited sources,
-summarize and compare documents, and interact by voice. Local development
-uses [Ollama](https://ollama.com) by default; Streamlit Community Cloud can
-use hosted Hugging Face Inference Providers for the LLM.
+The Streamlit widgets and layout in `frontend/app.py` are unchanged.
+
+## Architecture (what already existed)
+
+| Piece | Location | Notes |
+|---|---|---|
+| Streamlit UI | `frontend/app.py` | Upload, document list, Chat / Summarize / Compare, voice |
+| HTTP client | `frontend/api_client.py` | Uses `BACKEND_URL` when set; otherwise in-process TestClient |
+| FastAPI app | `backend/main.py` | `app` — start with Uvicorn |
+| Upload / list / delete | `backend/routers/documents.py` | Size/type checks, extract → chunk → embed → Chroma |
+| RAG chat | `backend/routers/chat.py` | Vector retrieval + LLM |
+| Summarize / compare | `backend/routers/summarize.py`, `compare.py` | Full-document text from Chroma |
+| Voice | `backend/routers/voice.py` | Local faster-whisper or OpenAI Whisper |
+| Extraction / OCR | `backend/services/extraction.py` | OCR only if `OCR_ENABLED=true` |
+| Embeddings | `backend/services/embeddings.py` | `local` (sentence-transformers) or `openai` |
+| Vectors / metadata | ChromaDB + SQLite under `data/` | Ephemeral on free Render |
+
+There was **no OpenAI integration** in the original repo (Ollama locally,
+optional Hugging Face). OpenAI chat, embeddings, and Whisper are added
+for Render. Do not put `OPENAI_API_KEY` in the Streamlit app or frontend.
+
+## Deployment blockers (free / starter plans)
+
+These are limitations of the hosts, not missing UI features:
+
+1. **Ollama is not available on Render or Streamlit Cloud.** Set
+   `LLM_PROVIDER=openai` and `OPENAI_API_KEY` on Render.
+2. **Local embedding models (torch / sentence-transformers) will typically
+   OOM on free Render (~512MB).** Use `EMBEDDING_PROVIDER=openai`.
+3. **faster-whisper is too large for free Render.** Deployed transcription
+   uses OpenAI Whisper when `LLM_PROVIDER=openai`.
+4. **Render and Streamlit disks are ephemeral.** Chroma + SQLite live on
+   the Render instance and are wiped when the service sleeps, restarts, or
+   is redeployed. Re-upload documents after a cold start.
+5. **Free Render sleeps after idle.** The first Streamlit request after
+   sleep can take 30–60+ seconds and may time out; retry.
+6. **OCR (Tesseract + Poppler) is not installed on Render’s Python
+   runtime.** Keep `OCR_ENABLED=false` unless you switch the backend to a
+   Docker image that installs `tesseract-ocr` and `poppler-utils`.
+7. **CORS is not required** for Streamlit’s server-side `httpx` calls.
+   Set `CORS_ORIGINS` only if a browser will call the API directly.
+8. **Streamlit Community Cloud has no private document isolation.** Anyone
+   with the app URL can use the shared backend store.
 
 ## Models and credentials
 
-Local Ollama mode needs no API key. Streamlit Community Cloud can use a
-Hugging Face token, stored in Streamlit Secrets, for hosted text generation.
-Embeddings and speech recognition run in the Streamlit app.
+| Capability | Local | Render + Streamlit Cloud |
+|---|---|---|
+| Chat / summarize / compare | Ollama (`qwen2.5:3b`) | OpenAI (`OPENAI_CHAT_MODEL`, default `gpt-4o-mini`) |
+| Embeddings | sentence-transformers | OpenAI embeddings API |
+| Speech-to-text | faster-whisper | OpenAI Whisper API |
+| Spoken replies in the UI | Browser speech synthesis | Same (no backend TTS required) |
 
-| Capability | Library | Where the model comes from | Account/API key? |
-|---|---|---|---|
-| Chat/LLM answers (local) | Ollama (`qwen2.5:3b`) | `ollama pull qwen2.5:3b`, run once | **No** |
-| Chat/LLM answers (cloud) | Hugging Face Inference Providers | Hosted inference | `HF_TOKEN` Streamlit secret |
-| Embeddings | sentence-transformers | auto-downloaded from huggingface.co on first use | **No** (public model) |
-| Speech-to-text | faster-whisper | auto-downloaded from huggingface.co on first use | **No** (public model) |
-| Spoken AI replies | Browser speech synthesis | Runs in the visitor's browser | **No** |
-| Optional `/voice/speak` API | Piper | Local installation | **No** |
-
-Local models require an internet connection on first use to download public
-model files. Hugging Face Inference Provider calls use your configured
-account and are subject to provider availability, quota, and billing.
-
-## What's implemented
-
-- **`/health`** — status of the configured LLM provider, ChromaDB, and embeddings
-  package (never fakes "ok").
-- **`/documents/upload`, `/documents`, `/documents/{id}`, `DELETE /documents/{id}`**
-  — upload a file, extract its text (PDF/DOCX/PPTX/XLSX/TXT/MD), chunk it,
-  embed it, and store it in ChromaDB + a SQLite metadata row. Failures are
-  recorded on the document (`status: "failed"`, `error: "..."`), not hidden.
-- **`POST /chat`** — embeds your question, retrieves the most relevant
-  chunks (optionally scoped to specific `document_ids`), and asks the configured LLM
-  to answer using *only* that retrieved context, returning the answer plus
-  the exact source chunks used.
-- **`POST /documents/{id}/summarize`** — summarizes one document in full.
-- **`POST /compare`** — compares 2–5 documents by summarizing each and
-  asking the configured LLM to contrast them.
-- **`POST /voice/transcribe`** — speech-to-text via faster-whisper.
-- **`POST /voice/speak`** — text-to-speech via Piper (only if
-  `TTS_ENABLED=true` in `.env`).
-- **`frontend/app.py`** — a Streamlit UI on top of all of the above:
-  upload/list/delete documents in the sidebar, a chat tab with citations
-  and a "🔊 Read aloud" button, a summarize tab, and a compare tab. Voice
-  input is a built-in microphone recorder in the chat tab; recordings can
-  be submitted directly as questions. Browser speech synthesis reads replies
-  aloud with pause/resume and stop controls.
-
-## What's *not* implemented yet
-
-- Hybrid BM25 + vector retrieval (pure vector search only right now).
-- OCR is wired up in `extraction.py` but its packages
-  (`pytesseract`/`pdf2image`) are commented out in `requirements.txt` —
-  uncomment them and set `OCR_ENABLED=true` if you need scanned-PDF support.
-- Automated tests (`tests/` is currently empty).
-
-## Running this on Windows
-
-Open PowerShell in the project folder:
+## Running locally (Windows)
 
 ```powershell
-# 1. Create the virtual environment
 python -m venv .venv
-
-# 2. Activate it
 .venv\Scripts\Activate.ps1
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# Optional OCR and Piper API packages are commented out in requirements.txt.
-# For OCR, install pytesseract/pdf2image and the Tesseract + poppler apps.
-# For the optional /voice/speak API, install piper-tts.
-
-# 4. Create your local .env file from the template
+pip install -r requirements-local.txt
 Copy-Item .env.example .env
+```
 
-# 5. Install and start Ollama separately (one-time), in its own terminal:
-#    Download from https://ollama.com, then:
+For local Ollama, in `.env` set `LLM_PROVIDER=ollama` and
+`EMBEDDING_PROVIDER=local`, then:
+
+```powershell
 ollama pull qwen2.5:3b
 ollama serve
+```
 
-# 6. Optional: run the standalone backend for REST API usage (/docs, curl)
+Optional standalone API:
+
+```powershell
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Then open **http://127.0.0.1:8000/docs** in a browser for interactive API
-docs — you can upload a document and try `/chat`, `/summarize`, and
-`/compare` directly from there. **http://127.0.0.1:8000/health** shows status
-for the configured LLM provider, ChromaDB, and the embeddings package.
-
-## 7. Run the Streamlit frontend
-
-The Streamlit UI calls the FastAPI app in-process, so a separate Uvicorn
-terminal is not required. From the project root:
+Streamlit without `BACKEND_URL` still uses in-process FastAPI:
 
 ```powershell
-.venv\Scripts\Activate.ps1
 streamlit run frontend/app.py
 ```
 
-This opens **http://localhost:8501** in your browser automatically. From
-there: upload documents in the sidebar, select which ones to scope a
-question to (or leave none selected to search everything), and use the
-Chat / Summarize / Compare tabs. To ask by voice, click the microphone
-widget in the Chat tab, record, then choose "Ask with recording" to
-transcribe the question and submit it directly.
+To mimic production (two processes), start Uvicorn as above and set
+`BACKEND_URL=http://127.0.0.1:8000` in `.env` or `.streamlit/secrets.toml`.
 
-AI replies can be read aloud using browser speech synthesis; no Piper setup
-is needed for the Streamlit UI.
+## Deploy A — FastAPI on Render
 
-## Deploy on Streamlit Community Cloud
+1. Push this repo to GitHub (do not commit `.env` or `.streamlit/secrets.toml`).
+2. In Render: **New → Web Service** → this repo.
+3. Settings:
+   - **Runtime:** Python 3.11
+   - **Build command:** `pip install -r backend/requirements.txt`
+   - **Start command:** `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+   - Root directory: repository root (so `backend.main:app` imports).
+4. Environment variables (Dashboard → Environment):
 
-1. Push this project to a GitHub repository. Do not commit `.env`, `.venv`,
-  or `data/`.
-2. In Streamlit Community Cloud, create an app from that repository and set
-  the main file path to `frontend/app.py`.
-3. In the app's **Settings → Secrets**, add:
+   | Key | Value |
+   |---|---|
+   | `LLM_PROVIDER` | `openai` |
+   | `EMBEDDING_PROVIDER` | `openai` |
+   | `OPENAI_API_KEY` | your key (Render secret) |
+   | `OPENAI_CHAT_MODEL` | `gpt-4o-mini` (or another chat model you have access to) |
+   | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` |
+   | `OCR_ENABLED` | `false` |
+   | `TTS_ENABLED` | `false` |
+   | `CORS_ORIGINS` | leave empty |
 
-  ```toml
-  LLM_PROVIDER = "huggingface"
-  HF_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
-  HF_TOKEN = "your Hugging Face token"
-  WHISPER_DEVICE = "cpu"
-  ```
+   Render injects `PORT`; do not set it yourself.
+5. Deploy. Open `https://<your-service>.onrender.com/health`. You should
+   see `"status": "ok"` and OpenAI + Chroma marked available. Open
+   `/docs` to try upload/chat. **This repo has not been deployed for you;
+   confirm those URLs after you click Deploy.**
 
-  Keep the token in Streamlit Secrets only. The app calls FastAPI in-process,
-  so you do not need to deploy a separate backend or set a backend URL.
-4. The app has one shared document store and no user authentication. Anyone
-  who can access the public app can use that store; do not upload private
-  documents. Cloud disk is temporary, so uploaded documents can disappear
-  when the app restarts or sleeps.
-5. The first use downloads embedding and Whisper models. Hugging Face
-  Inference Provider calls may have quota or billing limits.
+Optional: `render.yaml` in the repo root matches these commands.
+
+### OCR on Render (optional, not on the free Python runtime)
+
+Scanned PDFs need `pytesseract`, `pdf2image`, OS packages `tesseract-ocr`
+and `poppler-utils`, plus `OCR_ENABLED=true`. Use a Docker-based Render
+service if you need that; native Python builds cannot `apt-get` those
+binaries.
+
+## Deploy B — Streamlit Community Cloud (same UI)
+
+1. [share.streamlit.io](https://share.streamlit.io) → **New app** → this repo.
+2. **Main file path:** `frontend/app.py`
+3. Community Cloud installs **root** `requirements.txt` only (Streamlit +
+   httpx). It must **not** install torch/Chroma.
+4. **Settings → Secrets:**
+
+   ```toml
+   BACKEND_URL = "https://<your-service>.onrender.com"
+   ```
+
+   Do **not** put `OPENAI_API_KEY` here unless you are running the backend
+   in-process (not the intended cloud setup).
+
+## Deploy C — secrets map
+
+| Secret | Where |
+|---|---|
+| `OPENAI_API_KEY` | Render only |
+| `BACKEND_URL` | Streamlit secrets (and optional local `.env`) |
+| `HF_TOKEN` | Only if you keep `LLM_PROVIDER=huggingface` |
+
+## Deploy D — test after both services are live
+
+1. Streamlit sidebar health should not show a backend error.
+2. Upload a small `.txt` or text-layer PDF → status ready, chunk count > 0.
+3. Chat tab: ask a question that is answered only in that file; confirm
+   the answer and source expander.
+4. Summarize tab: summarize the same file.
+5. Compare tab: upload a second file and compare.
+6. Optional: record audio in Chat and use **Ask with recording**.
+
+If upload or chat fails with a timeout, the Render instance may be
+sleeping or still embedding; wait and retry. If health shows OpenAI
+unavailable, the key is missing on Render.
+
+## What's *not* implemented yet
+
+- Hybrid BM25 + vector retrieval (pure vector search).
+- Durable document storage across Render restarts (would need a disk or
+  hosted vector DB).
+- Automated tests (`tests/` is currently empty).
+
+
+## What's implemented
+
+- **`/health`** — configured LLM, ChromaDB, embeddings (never fakes "ok").
+- **`/documents/upload`**, list, get, delete — extract, chunk, embed, store.
+- **`POST /chat`** — RAG with source chunks.
+- **`POST /documents/{id}/summarize`**, **`POST /compare`**.
+- **`POST /voice/transcribe`** — local Whisper or OpenAI Whisper.
+- **`frontend/app.py`** — original Streamlit UI (not rewritten).
 
 ## Roadmap
 
@@ -151,11 +190,10 @@ is needed for the Streamlit UI.
 2. ✅ Document extraction & chunking
 3. ✅ Embeddings + persistent ChromaDB + SQLite metadata
 4. ⬜ BM25 + hybrid retrieval (currently pure vector search)
-5. ✅ Ollama integration + grounded Q&A with citations
+5. ✅ LLM Q&A with citations (Ollama / Hugging Face / OpenAI)
 6. ✅ Summaries & comparisons
 7. ✅ Streamlit frontend
-8. ✅ Voice input/output (built and smoke-tested via Streamlit's AppTest;
-   not yet hardware-tested with a real mic on your machine — that's the
-   first thing to try)
-9. ⬜ Performance, security hardening, automated tests
-10. ⬜ Final README polish, end-to-end verification on your machine
+8. ✅ Voice input (browser mic + transcribe)
+9. ⬜ Durable hosted storage, automated tests
+10. ⬜ End-to-end verification on your Render + Streamlit Cloud accounts
+

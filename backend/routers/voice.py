@@ -53,15 +53,41 @@ def _get_whisper_model():
     return _whisper_model
 
 
-@router.post("/transcribe", response_model=TranscribeResponse)
-async def transcribe(audio: UploadFile) -> TranscribeResponse:
-    raw = await audio.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+def _transcribe_openai(raw: bytes, filename: str) -> str:
+    import httpx
 
-    temp_path = settings.audio_dir_abs_path / f"{uuid.uuid4().hex}_{audio.filename or 'input'}"
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not set; cannot use OpenAI Whisper transcription.",
+        )
+    try:
+        response = httpx.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            files={"file": (filename, raw)},
+            data={"model": "whisper-1"},
+            timeout=300.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"OpenAI transcription failed ({exc.response.status_code}): "
+                f"{exc.response.text[:300]}"
+            ),
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"OpenAI transcription request failed: {exc}"
+        ) from exc
+    return (response.json().get("text") or "").strip()
+
+
+def _transcribe_local(raw: bytes, filename: str) -> str:
+    temp_path = settings.audio_dir_abs_path / f"{uuid.uuid4().hex}_{filename}"
     temp_path.write_bytes(raw)
-
     try:
         model = _get_whisper_model()
     except ImportError as exc:
@@ -74,11 +100,24 @@ async def transcribe(audio: UploadFile) -> TranscribeResponse:
 
     try:
         segments, _info = model.transcribe(str(temp_path))
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        return " ".join(segment.text.strip() for segment in segments).strip()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+@router.post("/transcribe", response_model=TranscribeResponse)
+async def transcribe(audio: UploadFile) -> TranscribeResponse:
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+
+    filename = audio.filename or "recording.wav"
+    if settings.llm_provider.lower() == "openai":
+        text = _transcribe_openai(raw, filename)
+    else:
+        text = _transcribe_local(raw, filename)
 
     if not text:
         raise HTTPException(status_code=422, detail="Could not detect any speech in the audio.")

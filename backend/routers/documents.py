@@ -98,6 +98,11 @@ async def upload_document(file: UploadFile) -> DocumentInfo:
         metadata_db.mark_failed(document_id, str(exc))
     except Exception as exc:  # noqa: BLE001 - record, don't crash the request
         metadata_db.mark_failed(document_id, f"Unexpected error during ingestion: {exc}")
+    finally:
+        # Extraction is finished in this request; later chat/summarize use
+        # Chroma + SQLite, not the original file. Drop the upload so a
+        # Render disk wipe or sleep cannot leave a dangling path we depend on.
+        saved_path.unlink(missing_ok=True)
 
     row = metadata_db.get_document(document_id)
     return _row_to_info(row)
